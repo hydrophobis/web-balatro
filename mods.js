@@ -4,17 +4,34 @@
  * @returns {Promise<boolean>}
  */
 async function isMod(dir) {
-    try {
-        await dir.getFileHandle("lovely.toml")
-        return true
-    } catch {
+    const knownFiles = [
+        "lovely.toml",
+        "manifest.json",
+        "header.json",
+        "metadata.json",
+        "main.lua",
+        dir.name + ".lua"
+    ];
+    for (const filename of knownFiles) {
         try {
-            await dir.getDirectoryHandle("lovely")
-            return true
-        } catch {
-            return false
-        }
+            await dir.getFileHandle(filename);
+            return true;
+        } catch {}
     }
+    try {
+        await dir.getDirectoryHandle("lovely");
+        return true;
+    } catch {}
+
+    try {
+        for await (const [path, obj] of dir.entries()) {
+            if (obj.kind === "file" && path.toLowerCase().endsWith(".lua")) {
+                return true;
+            }
+        }
+    } catch {}
+
+    return false;
 }
 
 /**
