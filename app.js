@@ -40,6 +40,53 @@ function getDataURIFromBlob(blob) {
 
 let cached_games = []
 
+/** Messages past this point are only written to the console. */
+const MAX_REPORT_LINES = 200
+
+/**
+ * Show what the build did, and anything that did not go to plan. Mods are
+ * written against one specific game version, so patches that no longer match
+ * are normal and worth surfacing without failing the build.
+ *
+ * @param {string[]} summary One line each, describing what was built
+ * @param {string[]} messages Warnings collected while building
+ */
+function showBuildReport(summary, messages) {
+    const container = $("buildReport")
+    container.innerHTML = ""
+
+    if (summary.length) {
+        const line = document.createElement("p")
+        line.innerText = summary.join(" · ")
+        container.appendChild(line)
+    }
+
+    if (messages.length) {
+        const details = document.createElement("details")
+        const label = document.createElement("summary")
+        label.innerText = messages.length + " build warning" + (messages.length == 1 ? "" : "s")
+        details.appendChild(label)
+
+        const list = document.createElement("ul")
+        for (const message of messages.slice(0, MAX_REPORT_LINES)) {
+            const item = document.createElement("li")
+            item.innerText = message
+            list.appendChild(item)
+        }
+        if (messages.length > MAX_REPORT_LINES) {
+            const item = document.createElement("li")
+            item.innerText = "... and " + (messages.length - MAX_REPORT_LINES) +
+                " more, see the browser console"
+            list.appendChild(item)
+        }
+        details.appendChild(list)
+        container.appendChild(details)
+        console.warn("Build warnings:\n" + messages.join("\n"))
+    }
+
+    container.classList.toggle("hidden", !summary.length && !messages.length)
+}
+
 
 document.addEventListener("DOMContentLoaded", async () => {
     const file_input = $("exeInput")

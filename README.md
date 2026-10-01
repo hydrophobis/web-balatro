@@ -27,15 +27,93 @@ The site will cache each built version in IndexedDB, and each version will have 
 
 ## Mods
 
-Some mods work, such as [Handy](https://github.com/SleepyG11/HandyBalatro). Some modification to the mod may be required.
+Add mod folders with 'Add Mod Folder' before building. Point it at a single mod,
+or at a folder containing several, and they are all picked up. Each mod is listed
+with how it will be handled, and the build reports what it did afterwards.
 
-Mods that require SMODS will not function as SMODS isn't compatible.
+Mods are patched at build time by a reimplementation of the
+[Lovely](https://github.com/ethangreen-dev/lovely-injector) patch format in
+[lovely.js](lovely.js): `pattern`, `regex`, `copy` and `module` patches, `target`
+lists, priorities, `times`, `match_indent`, `line_prepend`, `root_capture`,
+`{{lovely:var}}` and `{{lovely_hack:patch_dir}}`. Native Lovely rewrites each
+file as Lua loads it; there is no way to hook that in love.js, so every patch is
+applied to the source archive instead.
 
-A common issue with mod-web compatibility is the .toml file's multiline quotes. The web parser parses "''''" differently than the Lovely .toml parser. To fix, just add a space to seperate the four quotes, such as "' '''"
+A patch that no longer matches the game's source is reported as a warning rather
+than failing the build, which is how you find out a mod expects a different
+Balatro version.
 
-### Possible SMODS workaround
+### Steamodded
 
-The 'Use Lovely Dump' button can be used to support SMODS. The Lovely mod loader, when used to apply mods to native Balatro will create a dump of all files modified in the process. The 'Use Lovely Dump' uses the dump to patch the files, instead of patching the files using my version of the mod loader. This allows SMODS to run after removing some LuaJIT only features, such as 'goto'. SMODS does work with some editing.
+[Steamodded](https://github.com/Steamodded/smods) works, and so do the mods that
+depend on it. Add the Steamodded folder as a mod alongside the mods that need it,
+then build as usual.
+
+Verified by building Balatro 1.0.1n with Steamodded release 26.829.0 and with
+`main` (26.927.0), and loading both in a browser: the game reaches the main menu
+with its mods loaded, and 1045 of Steamodded's 1058 file-editing patches apply,
+with not a single pattern failing to find its target. Of the 13 that do not
+apply, 12 target buffers that only exist at runtime and one is a typo in
+Steamodded that native Lovely skips too. Its 12 module injections are handled
+separately, as files.
+
+Six things make it work:
+
+- `module` patches become real files in the archive, so `require` finds them, and
+  anything marked `load_now` gets required ahead of the file it must precede.
+- love.js runs plain **Lua 5.1**, not LuaJIT, so `goto`/`::label::` is a syntax
+  error. [lua51.js](lua51.js) rewrites those jumps onto `repeat ... until true`
+  with `break`, relaying through nested loops with a flag where `break` alone
+  cannot reach. Every `.lua` file in the build goes through it, including the
+  payloads mods inject and the files Steamodded loads at runtime. It also strips
+  the byte order mark that editors on Windows leave behind, which LuaJIT skips
+  and Lua 5.1 does not.
+- `nativefs`, `lovely` and Steamodded's libcurl-based HTTPS client all reach for
+  things a browser does not have. [patches.js](patches.js) replaces them: `nativefs`
+  maps onto `love.filesystem` (including the absolute save-directory paths mods
+  pass around, and Steamodded's redirects and path normalisation), `lovely`
+  exposes a variable store with `reload_patches`/`apply_patches` that no-op
+  because the patches are already baked in, and HTTPS requests report failure
+  instead of erroring.
+- Without the sound thread the game never builds a sound manager, and mod loaders
+  register their sounds through it during startup. The build now stands one in
+  early enough for that to work.
+- LuaJIT's `string.format` runs any value through `tostring()` for `%s`; plain
+  Lua 5.1 raises instead, and the game and its mods format nils into strings
+  constantly. `web_patches.lua` coerces the arguments to match LuaJIT. Getting
+  this wrong is expensive and silent: it used to swallow the error and return the
+  format's first argument, which turned Steamodded's "does a localised copy of
+  this atlas exist?" lookup into a hit against the atlas itself, so **every mod
+  atlas was dropped** and the first modded card to be drawn crashed the game.
+- WebGL is OpenGL ES, which is stricter than desktop GL: it will not compare a
+  float against an integer literal, and it has no array constructors. Steamodded's
+  atlas shader does both - which one depends on the release - and repairs itself
+  natively through a Lovely hook this build cannot provide, so `web_patches.lua`
+  repairs both cases itself. This is not cosmetic: a shader that fails to compile
+  leaves a half-built object behind, and the runtime traps when it is collected,
+  taking the game down with a bare `memory access out of bounds` and no Lua error
+  to go on.
+
+Known gaps:
+
+- Only the two OpenGL ES problems above are repaired. A mod shader that needs
+  more than that will still fail to compile, and that crashes the runtime rather
+  than just losing an effect.
+- Sounds a mod registers through Steamodded are accepted but never play, because
+  the sound thread the game would hand them to is disabled on the web.
+- Steamodded cannot restart the game to apply a blacklist change; reload the page
+  instead.
+- Mods distributed as `.zip` inside the Mods folder depend on
+  `love.filesystem.mount` succeeding on an archive inside the fused game, which
+  is not guaranteed. Extract them instead.
+
+### Lovely dump
+
+The 'Use Lovely Dump' button is still there. Lovely writes a dump of every file
+it modified when it patches native Balatro; feeding that dump in uses those files
+directly instead of applying the patches here. Tick the checkbox next to each mod
+that was part of the dump so its patches are not applied twice. Its modules are
+still injected from the mod folder.
 
 ## Portable Builder
 
@@ -50,12 +128,13 @@ Don't put the portable player on the internet because it contains Balatro's sour
 - Main gameplay loop
 - Sound
 - Saves
-- Simple Mod Support
+- Lovely mod support
+- Steamodded ('SMODS'), and the mods built on it
 
 ## Planned Features
 
-- Full mod support
-- Specifically the 'SMODS' mod, the main mod injector that most other mods use.
+- Full OpenGL ES repair for mod shaders
+- Sound for mod-registered sounds
 - More accurate RNG.
 
 ## Credits

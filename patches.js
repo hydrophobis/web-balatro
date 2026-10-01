@@ -352,16 +352,27 @@ love.system.getOS = function()
   return "Windows"
 end
 
+-- LuaJIT's string.format accepts any value for %s and runs it through
+-- tostring(); plain Lua 5.1 raises instead. The game and its mods rely on the
+-- LuaJIT behaviour - formatting a nil into a key with ('%s_%s'):format(k, v) is
+-- commonplace - so coerce the arguments rather than letting it raise.
+--
+-- Returning something wrong here is far worse than raising: this used to catch
+-- the error and hand back the format's first argument, which silently turned
+-- Steamodded's "does a localised copy of this atlas exist?" check into "yes",
+-- and every mod atlas was dropped.
 local _format = string.format
-function string:format(key, ...)
-    local args = {...}
-    -- Replace nil with empty string
-    local ok, ret = pcall(function() return _format(self, key, unpack(args)) end)
-    if ok then
-        return ret
-    else
-        return key
+local _unpack = unpack or table.unpack
+function string.format(fmt, ...)
+    local count = select("#", ...)
+    local args = { ... }
+    for i = 1, count do
+        local kind = type(args[i])
+        if kind ~= "string" and kind ~= "number" then
+            args[i] = tostring(args[i])
+        end
     end
+    return _format(fmt, _unpack(args, 1, count))
 end
 
 function override_setMipmapFilter(texture)
@@ -371,15 +382,113 @@ end
 
 local _newImage = love.graphics.newImage
 love.graphics.newImage = function(path, config)
+    config = config or {} -- Mods call newImage with no settings table
     config.mipmaps = false -- Disable mipmaps for web compatibility
     return override_setMipmapFilter(_newImage(path, config))
 end
 
 
 local _quit = love.event.quit
-love.event.quit = function()
+love.event.quit = function(arg)
+    -- The game cannot relaunch itself in a browser tab, and quitting leaves a
+    -- dead canvas behind, so a requested restart is reported instead.
+    if arg == "restart" then
+        print("Ignoring restart request: reload the page to restart.")
+        return
+    end
     print("Quitting game...")
-    _quit()
+    _quit(arg)
+end
+
+-- Mods regularly probe LuaJIT and the OS for platform checks. love.js runs
+-- plain Lua 5.1 inside a sandbox, so give them something to read instead of nil.
+jit = jit or {
+    arch = "web",
+    os = "Other",
+    version = "Lua 5.1 (love.js)",
+    version_num = 20100,
+    status = function() return false end,
+    off = function() end,
+    on = function() end,
+    flush = function() end,
+}
+
+os.execute = os.execute or function() return -1 end
+os.getenv = os.getenv or function() return nil end
+
+-- WebGL is OpenGL ES, which refuses to compare a float against an integer
+-- literal. Shaders written for desktop GL do that freely, and Steamodded ships
+-- some; natively it repairs them as they load, through a Lovely hook this build
+-- cannot provide. Repair the common case here instead.
+--
+-- This matters more than a missing effect: a shader that fails to compile
+-- leaves a half-built object behind, and the runtime traps when it is collected,
+-- taking the whole game down.
+-- Split a constructor's argument list on the commas that are not nested.
+local function split_args(text)
+    local args, depth, start = {}, 0, 1
+    for i = 1, #text do
+        local ch = text:sub(i, i)
+        if ch == "(" then depth = depth + 1
+        elseif ch == ")" then depth = depth - 1
+        elseif ch == "," and depth == 0 then
+            args[#args + 1] = text:sub(start, i - 1)
+            start = i + 1
+        end
+    end
+    args[#args + 1] = text:sub(start)
+    return args
+end
+
+local function trim(s)
+    return (s:gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+-- GLSL ES 1.00 has neither array constructors nor initialised globals, so
+--     vec2 n[8] = vec2[8](a, b, ...);   ... n[i] ...
+-- is rewritten into a lookup function:
+--     vec2 n_get(int i) { if (i == 0) return a; ... }   ... n_get(i) ...
+local function fix_array_constructors(code)
+    local guard = 0
+    while guard < 16 do
+        guard = guard + 1
+        local s, e, ctype, name = code:find(
+            "([%a_][%w_]*)%s+([%a_][%w_]*)%s*%[%s*%d*%s*%]%s*=%s*[%a_][%w_]*%s*%[%s*%d*%s*%]%s*%(")
+        if not s then break end
+
+        local depth, i = 1, e + 1
+        while i <= #code and depth > 0 do
+            local ch = code:sub(i, i)
+            if ch == "(" then depth = depth + 1 elseif ch == ")" then depth = depth - 1 end
+            i = i + 1
+        end
+        if depth ~= 0 then break end
+
+        local args = split_args(code:sub(e + 1, i - 2))
+        local semicolon = code:find(";", i - 1, true) or (i - 1)
+
+        local body = {}
+        for idx, arg in ipairs(args) do
+            body[#body + 1] = ("if (i == %d) { return %s; }"):format(idx - 1, trim(arg))
+        end
+        local getter = ("%s %s_get(int i) { %s return %s; }"):format(
+            ctype, name, table.concat(body, " "), trim(args[1]))
+
+        code = code:sub(1, s - 1) .. getter .. code:sub(semicolon + 1)
+        code = code:gsub(name .. "%s*%[([^%[%]]-)%]", name .. "_get(%1)")
+    end
+    return code
+end
+
+local _newShader = love.graphics.newShader
+love.graphics.newShader = function(code, other_code)
+    if type(code) == "string" and code:find("\\n", 1, true) then
+        code = fix_array_constructors(code)
+        -- "uv.x < 0" becomes "uv.x < 0.0", and the same with the operands swapped
+        code = code:gsub("([%a_][%w_]*%.[xyzwrgba])(%s*[<>]=?%s*)(%d+)([^%.%d])", "%1%2%3.0%4")
+        code = code:gsub("([^%.%w_])(%d+)(%s*[<>]=?%s*)([%a_][%w_]*%.[xyzwrgba])", "%1%2.0%3%4")
+    end
+    return _newShader(code, other_code)
 end
 
 local _randomSeed = math.randomseed
@@ -391,6 +500,11 @@ math.randomseed = function(seed)
     end
     _randomSeed(seed)
 end
+
+-- The fake threads below are chatty; this logs every channel message, every
+-- frame, which floods the console and costs frames. Set it to true when
+-- debugging the thread shims.
+WEB_DEBUG_CHANNELS = false
 
 local prevthread = nil
 
@@ -427,7 +541,7 @@ function FakeChannel:push(value)
     if self.name == "save_request" and value == "done" then
         return
     end
-    print("Pushing value to channel: ", value.type .. " - " .. self.name)
+    if WEB_DEBUG_CHANNELS then print("Pushing value to channel: ", value.type .. " - " .. self.name) end
     table.insert(self.queue, value)
     if self._thread and coroutine.status(self._thread) == "suspended" then
         coroutine.resume(self._thread) -- Resume the previous thread when a value is pushed
@@ -435,14 +549,14 @@ function FakeChannel:push(value)
 end
 
 function FakeChannel:pop()
-    print("Popping value from channel" .. " - " .. self.name)
+    if WEB_DEBUG_CHANNELS then print("Popping value from channel" .. " - " .. self.name) end
     return table.remove(self.queue, 1)
 end
 
 function FakeChannel:demand()
     while #self.queue == 0 do
         coroutine.yield() -- Yield until a value is pushed
-        print("Channel" .. self.name .. " received data.")
+        if WEB_DEBUG_CHANNELS then print("Channel" .. self.name .. " received data.") end
     end
     return self:pop()
 end
@@ -481,116 +595,343 @@ end
 -- btw, mod support is pretty nonexistent
 load = loadstring`,
 // -------------------------------------------------------------------------------
-  "nativefs.lua": `-- faknativefs.lua
+  "nativefs.lua": `-- Web stand-in for the 'nativefs' module that Steamodded and other mods use to
+-- reach outside LOVE's sandbox. A browser has no real filesystem to reach, so
+-- every call is mapped onto love.filesystem instead: reads resolve against the
+-- fused .love archive (shadowed by the save directory) and writes land in the
+-- save directory.
+--
+-- Paths arriving here can be relative, absolute (mods happily pass
+-- love.filesystem.getSaveDirectory() around) or redirected through a mounted
+-- archive, so everything goes through resolve() first.
+
 local nativefs = {}
 
-function join_path(a, b)
-    if b:find("^/") then
-        return b
+local save_dir = love.filesystem.getSaveDirectory and love.filesystem.getSaveDirectory() or ""
+local source_dir = love.filesystem.getSource and love.filesystem.getSource() or ""
+
+local function slashes(path)
+    return (tostring(path or ""):gsub("\\\\", "/"))
+end
+
+-- Collapse '.', '..' and repeated slashes, and drop any leading slash.
+local function normalize(path)
+    local parts = {}
+    for part in slashes(path):gmatch("[^/]+") do
+        if part == ".." then
+            if #parts > 0 then table.remove(parts) end
+        elseif part ~= "." then
+            parts[#parts + 1] = part
+        end
     end
-    if not a:find("/$") then
-        a = a .. "/"
+    return table.concat(parts, "/")
+end
+
+local redirects = {}
+
+-- Steamodded registers redirects so a mounted archive can be read through a
+-- path that looks like a plain directory.
+function nativefs.smodsAddRedirect(realPath, lfsPath)
+    realPath = slashes(realPath)
+    if redirects[realPath] then
+        return false, 'A redirect with path "' .. realPath .. '" already exists'
     end
-    return a .. b
+    redirects[realPath] = slashes(lfsPath)
+    return true
+end
+
+local function applyRedirect(path)
+    for from, to in pairs(redirects) do
+        if path == from then return to end
+        if path:sub(1, #from + 1) == from .. "/" then
+            return to .. "/" .. path:sub(#from + 2)
+        end
+    end
+    return nil
+end
+
+local function stripRoot(path)
+    for _, root in ipairs({ slashes(save_dir), slashes(source_dir) }) do
+        if root ~= "" then
+            if path == root then return "" end
+            if path:sub(1, #root + 1) == root .. "/" then return path:sub(#root + 2) end
+        end
+    end
+    return path
 end
 
 nativefs.workingDirectory = ""
 
--- Read a file from the game's source or save directory
-function nativefs.read(filename)
-    if love.filesystem.getInfo(join_path(nativefs.workingDirectory, filename)) then
-        return love.filesystem.read(join_path(nativefs.workingDirectory, filename))
-    else
-        return nil, "File does not exist"
+local function resolve(path)
+    path = slashes(path)
+    local redirected = applyRedirect(path)
+    if redirected then return normalize(redirected) end
+    local absolute = path:sub(1, 1) == "/" or path:match("^%a:") ~= nil
+    if not absolute and nativefs.workingDirectory ~= "" then
+        path = slashes(nativefs.workingDirectory) .. "/" .. path
+    end
+    return normalize(stripRoot(path))
+end
+
+nativefs.resolve = resolve
+
+local function ensureParent(path)
+    local dir = path:match("^(.*)/[^/]*$")
+    if dir and dir ~= "" and not love.filesystem.getInfo(dir) then
+        love.filesystem.createDirectory(dir)
     end
 end
 
--- Write to a file in the save directory
-function nativefs.write(filename, contents)
-    return love.filesystem.write(join_path(nativefs.workingDirectory, filename), contents)
+function nativefs.read(a, b, c)
+    if type(b) == "string" then -- read(container, name, size)
+        return love.filesystem.read(a, resolve(b), c)
+    end
+    local path = resolve(a)
+    if not love.filesystem.getInfo(path) then
+        return nil, "Could not open file " .. tostring(a) .. ": does not exist"
+    end
+    return love.filesystem.read(path, b)
 end
 
--- Check if a path exists and get info
-function nativefs.getInfo(path)
-    return love.filesystem.getInfo(join_path(nativefs.workingDirectory, path))
+function nativefs.write(path, data, size)
+    local resolved = resolve(path)
+    ensureParent(resolved)
+    return love.filesystem.write(resolved, data, size)
 end
 
-function nativefs.getDirectoryItemsInfo(path)
-    -- { type: "directory" | "file", name: "..." }
-    local files = love.filesystem.getDirectoryItems(join_path(nativefs.workingDirectory, path))
+function nativefs.append(path, data, size)
+    local resolved = resolve(path)
+    ensureParent(resolved)
+    return love.filesystem.append(resolved, data, size)
+end
+
+function nativefs.getInfo(path, a, b)
+    return love.filesystem.getInfo(resolve(path), a, b)
+end
+
+function nativefs.exists(path)
+    return love.filesystem.getInfo(resolve(path)) ~= nil
+end
+
+function nativefs.getDirectoryItems(path)
+    return love.filesystem.getDirectoryItems(resolve(path))
+end
+
+function nativefs.getDirectoryItemsInfo(path, filtertype)
     local out = {}
-    for i, v in ipairs(files) do
-        local info = love.filesystem.getInfo(join_path(join_path(nativefs.workingDirectory, path), v))
-        out[i] = { name = v, type = info.type }
+    local base = slashes(path):gsub("/$", "")
+    for _, name in ipairs(nativefs.getDirectoryItems(base)) do
+        local info = nativefs.getInfo(base .. "/" .. name)
+        if info and (not filtertype or info.type == filtertype) then
+            info.name = name
+            out[#out + 1] = info
+        end
     end
     return out
 end
 
--- Check if a file exists
-function nativefs.exists(path)
-    return love.filesystem.getInfo(join_path(nativefs.workingDirectory, path)) ~= nil
+function nativefs.createDirectory(path)
+    return love.filesystem.createDirectory(resolve(path))
 end
 
--- List directory contents
-function nativefs.getDirectoryItems(path)
-    return love.filesystem.getDirectoryItems(join_path(nativefs.workingDirectory, path))
-end
+nativefs.mkdir = nativefs.createDirectory
 
--- Create a directory
-function nativefs.mkdir(path)
-    return love.filesystem.createDirectory(join_path(nativefs.workingDirectory, path))
-end
-
--- Remove a file or directory
 function nativefs.remove(path)
-    return love.filesystem.remove(join_path(nativefs.workingDirectory, path))
+    return love.filesystem.remove(resolve(path))
 end
 
--- Load Lua file as chunk
-function nativefs.load(filename)
-    local contents, err = love.filesystem.read(join_path(nativefs.workingDirectory, filename))
+-- nativefs reports a missing file by returning nil plus a message, while
+-- love.filesystem raises. Callers branch on the nil - Steamodded uses it to fall
+-- back from a 2x asset to a 1x one - so the difference matters.
+local function missing(path)
+    return nil, "Could not open file " .. tostring(path) .. ": does not exist"
+end
+
+function nativefs.newFile(path, mode)
+    local resolved = resolve(path)
+    local ok, file, err = pcall(love.filesystem.newFile, resolved, mode)
+    if not ok then return nil, tostring(file) end
+    if not file then return nil, err end
+    return file
+end
+
+function nativefs.newFileData(a, b)
+    if type(b) == "string" then -- newFileData(contents, name)
+        return love.filesystem.newFileData(a, b)
+    end
+    local path = resolve(a)
+    if not love.filesystem.getInfo(path) then return missing(a) end
+    local ok, data, err = pcall(love.filesystem.newFileData, path)
+    if not ok then return nil, tostring(data) end
+    if not data then return nil, err end
+    return data
+end
+
+function nativefs.load(path)
+    local contents, err = nativefs.read(path)
     if not contents then return nil, err end
-    return load(contents, '@' .. filename)
+    return load(contents, "@" .. slashes(path))
 end
 
-function nativefs.newFileData(path)
-    return love.filesystem.newFileData(join_path(nativefs.workingDirectory, path))
+function nativefs.mount(archive, mountpoint, append)
+    return love.filesystem.mount(resolve(archive), mountpoint, append)
+end
+
+function nativefs.unmount(archive)
+    return love.filesystem.unmount(resolve(archive))
 end
 
 function nativefs.setWorkingDirectory(path)
-    nativefs.workingDirectory = join_path(nativefs.workingDirectory, path)
-    print("Navigated to "..nativefs.workingDirectory)
+    path = slashes(path)
+    local absolute = path:sub(1, 1) == "/" or path:match("^%a:") ~= nil
+    if absolute or nativefs.workingDirectory == "" then
+        nativefs.workingDirectory = path
+    else
+        nativefs.workingDirectory = nativefs.workingDirectory .. "/" .. path
+    end
+    return true
 end
 
 function nativefs.getWorkingDirectory()
     return nativefs.workingDirectory
 end
 
--- Read as lines (like nativefs.lines)
-function nativefs.lines(filename)
-    local content = nativefs.read(filename)
+function nativefs.getDriveList()
+    return {}
+end
+
+-- Mods build asset paths by concatenation and rely on this to fix up casing.
+function nativefs.getNormalizedPath(path)
+    path = slashes(path)
+    if nativefs.getInfo(path) then return path end
+    local trimmed = path:gsub("/$", "")
+    local parent = trimmed:match("^(.*)/[^/]*$")
+    if not parent or parent == "" then return path end
+    local parent_dir = nativefs.getNormalizedPath(parent)
+    for _, name in ipairs(nativefs.getDirectoryItems(parent_dir) or {}) do
+        if (parent_dir .. "/" .. name):lower() == trimmed:lower() then
+            return parent_dir .. "/" .. name
+        end
+    end
+    return path
+end
+
+function nativefs.lines(path)
+    local content = nativefs.read(path)
     local i = 1
     return function()
-        if not content then return nil end
-        local next_newline = content:find("\\n", i)
+        if not content or i > #content then return nil end
+        local next_newline = content:find("\\n", i, true)
         if not next_newline then
             local line = content:sub(i)
-            content = nil
-            return line
-        else
-            local line = content:sub(i, next_newline - 1)
-            i = next_newline + 1
+            i = #content + 1
             return line
         end
+        local line = content:sub(i, next_newline - 1)
+        i = next_newline + 1
+        return (line:gsub("\\r$", ""))
     end
 end
 
 return nativefs`,
 // -------------------------------------------------------------------------------
-  "lovely.lua": `local lovely = {}
+  "lovely.lua": `-- Stand-in for the module the Lovely injector exposes to Lua.
+--
+-- Lovely patches the game as it loads, but this build applies every patch to
+-- the source archive ahead of time, so the runtime half of its API is reduced
+-- to something mods can call without crashing:
+--   * reload_patches() succeeds without doing anything - the patches a reload
+--     would re-apply are already baked into the archive
+--   * apply_patches() hands back the buffer it was given, so mods that run
+--     their own files through it keep working (unpatched)
+--   * the variable store is real, but only lives for the current page
 
-lovely.version = "1.0.0-WEB"
+local lovely = {}
+
+lovely.version = "0.9.0-web"
 lovely.mod_dir = "Mods/"
+lovely.is_web = true
+lovely.patch_dir = "Mods/"
+
+local vars = {}
+
+function lovely.set_var(key, value)
+    vars[tostring(key)] = tostring(value)
+    return true
+end
+
+function lovely.get_var(key)
+    return vars[tostring(key)]
+end
+
+function lovely.remove_var(key)
+    local previous = vars[tostring(key)]
+    vars[tostring(key)] = nil
+    return previous
+end
+
+function lovely.reload_patches()
+    print("lovely.reload_patches(): patches are applied when the version is built; ignoring.")
+    return true
+end
+
+function lovely.apply_patches(name, buffer)
+    return buffer
+end
 
 return lovely`
+}
+
+/**
+ * Extra files written only when a Steamodded-style mod is present.
+ *
+ * Steamodded injects these module names itself, from sources that need LuaJIT's
+ * FFI to talk to libcurl. Nothing in a browser can load a native library, so
+ * they are replaced with stubs that report failure instead of erroring at
+ * require time.
+ */
+window.smodsPatches = {
+    "https.lua": `-- love's https module is not built into love.js.
+return {
+    request = function(url)
+        print("https.request('" .. tostring(url) .. "'): not available in the web build")
+        return 0, "HTTPS requests are not available in the web build", {}
+    end,
+}`,
+// -------------------------------------------------------------------------------
+    "luajit-curl.lua": `-- Steamodded's libcurl binding needs LuaJIT's FFI, which love.js does not have.
+return setmetatable({}, {
+    __index = function()
+        error("libcurl is not available in the web build", 2)
+    end,
+})`,
+// -------------------------------------------------------------------------------
+    "SMODS/nativefs.lua": `-- Steamodded registers its nativefs twice, under 'nativefs' and under
+-- 'SMODS.nativefs', so that a mod vendoring its own copy cannot replace the one
+-- Steamodded itself uses. Both names resolve to the web version.
+return require("nativefs")`,
+// -------------------------------------------------------------------------------
+    "SMODS/https.lua": `-- Replaces Steamodded's threaded libcurl client.
+local M = {}
+
+local function unavailable(url)
+    print("SMODS.https: request to '" .. tostring(url) .. "' skipped (no HTTPS in the web build)")
+    return 0, "HTTPS requests are not available in the web build", {}
+end
+
+function M.request(url)
+    return unavailable(url)
+end
+
+function M.asyncRequest(url, options, cb)
+    if type(options) == "function" and not cb then
+        cb = options
+    end
+    local code, body, headers = unavailable(url)
+    if type(cb) == "function" then cb(code, body, headers) end
+end
+
+M.threads = {}
+
+return M`
 }
