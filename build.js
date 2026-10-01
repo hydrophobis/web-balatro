@@ -15,6 +15,22 @@
 const LOVELY_DUMP = "Dump from Lovely"
 
 /**
+ * Bump this whenever the patches guarded by the `web_patched` marker change.
+ *
+ * Builds are usually made from the cached "vanilla" build rather than from
+ * Balatro.exe, and that cached copy is itself an output of this function, so it
+ * already carries the marker. While the marker was a bare boolean, a vanilla
+ * cached by an older version of this file skipped the whole patch block
+ * forever - including patches added since. That is not theoretical: a vanilla
+ * cached before the sound-manager stub existed still had `F_SOUND_THREAD`
+ * turned off but no `G.SOUND_MANAGER`, so Steamodded's `SMODS.Sound:inject()`
+ * died on `G.SOUND_MANAGER.channel` and took the game down at boot.
+ *
+ * Storing the revision instead means such a build re-patches itself.
+ */
+const PATCH_REVISION = "2"
+
+/**
  * @param {Blob | File} blob .zip or .exe of balatro
  * @param {Object<string, Object>} mods Nested object of mods
  * @returns {Promise<Blob>} .zip of patched source
@@ -287,11 +303,21 @@ async function buildFromSource(blob, mods) {
         }
     }
 
-    // If source has been patched already, and it hasn't been overwritten by a dump, skip patching.
-    if (!zipfile.file("web_patched") || mods[LOVELY_DUMP]) {
+    // The marker records which revision of the patches below this source was
+    // built with, so a source patched by an older version of this file gets
+    // brought up to date instead of being left as it is. A Lovely dump
+    // overwrites game files wholesale, so that forces a re-patch too.
+    //
+    // Every step below is written to be safe to run again over a source that
+    // already carries some or all of these patches.
+    const marker = zipfile.file("web_patched")
+    const baked_revision = marker === null ? null : (await marker.async("string")).trim()
+    if (baked_revision !== PATCH_REVISION || mods[LOVELY_DUMP]) {
         {
             let contents = await get_file("main.lua")
-            contents = 'require "web_patches"\n' + contents
+            if (contents.indexOf('require "web_patches"') === -1) {
+                contents = 'require "web_patches"\n' + contents
+            }
             contents = contents.replace("if os == 'OS X' or os == 'Windows' then", "if false then")
             set_file("main.lua", contents)
         }
@@ -309,12 +335,17 @@ async function buildFromSource(blob, mods) {
             // because that is where mod loaders hook in and mods register sounds
             // through it.
             const contents = await get_file("game.lua")
-            const stub = "if not G.F_SOUND_THREAD then self.SOUND_MANAGER = " +
-                "{ channel = { push = function() end }, load_channel = { push = function() end, pop = function() end } } end\n    "
-            if (contents.indexOf("if G.F_SOUND_THREAD then") === -1) {
-                note("could not find the sound thread check in game.lua; mod sounds may crash the game")
+            const signature = "if not G.F_SOUND_THREAD then self.SOUND_MANAGER ="
+            const stub = signature +
+                " { channel = { push = function() end }, load_channel = { push = function() end, pop = function() end } } end\n    "
+            if (contents.indexOf(signature) !== -1) {
+                // An earlier pass over this source already stood one in.
+            } else if (contents.indexOf("if G.F_SOUND_THREAD then") === -1) {
+                note("could not find the sound thread check in game.lua, so no sound manager was stood in: " +
+                    "Steamodded crashes at boot on a nil G.SOUND_MANAGER. This build of Balatro may be too new.")
+            } else {
+                set_file("game.lua", contents.replace("if G.F_SOUND_THREAD then", stub + "if G.F_SOUND_THREAD then"))
             }
-            set_file("game.lua", contents.replace("if G.F_SOUND_THREAD then", stub + "if G.F_SOUND_THREAD then"))
         }
 
         progress_bar.value = "76"
@@ -326,7 +357,7 @@ async function buildFromSource(blob, mods) {
             else set_file(path, contents.replace(/glow_samples;/g, "4;"))
         }
 
-        zipfile.file("web_patched", "true")
+        zipfile.file("web_patched", PATCH_REVISION)
     }
 
     // Prepended last so they still land after `require "web_patches"`, which
