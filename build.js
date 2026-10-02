@@ -30,6 +30,9 @@ const LOVELY_DUMP = "Dump from Lovely"
  */
 const PATCH_REVISION = "2"
 
+/** LuaJIT's FFI, which love.js has no equivalent for. */
+const NEEDS_FFI = /require *\(? *["']ffi["']|\bffi\.(cdef|load|typeof|metatype)\b/
+
 /**
  * @param {Blob | File} blob .zip or .exe of balatro
  * @param {Object<string, Object>} mods Nested object of mods
@@ -190,8 +193,10 @@ async function buildFromSource(blob, mods) {
             // files, so one named after a game file would replace it.
             note(entry.label + ": module '" + patch.name + "' overwrites the game's own " + path)
         }
+        let module_source
         try {
-            set_file(path, await get_mod_file(entry.mod, String(patch.source)))
+            module_source = await get_mod_file(entry.mod, String(patch.source))
+            set_file(path, module_source)
         } catch (err) {
             note(entry.label + ": " + err.message)
             continue
@@ -200,6 +205,14 @@ async function buildFromSource(blob, mods) {
         if (window.patches[path] || (steamodded && window.smodsPatches[path])) {
             note(entry.label + ": module '" + patch.name +
                 "' needs native code, so the web version of it is used instead")
+        } else if (NEEDS_FFI.test(module_source)) {
+            // Mods usually bundle `nativefs` under a name this build replaces,
+            // but one injected under a name of its own keeps its LuaJIT code.
+            // That is only fatal once something requires it - many mods reach
+            // for their own copy only when Steamodded is absent - so report it
+            // rather than failing the build.
+            note(entry.label + ": module '" + patch.name + "' needs LuaJIT's FFI, which love.js does not have. " +
+                "It will error if the mod requires it rather than Steamodded's file system.")
         }
         if (patch.load_now && patch.before) {
             requires_before[patch.before] = requires_before[patch.before] || []
