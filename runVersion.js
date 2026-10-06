@@ -8,6 +8,19 @@ function runVersion(version) {
          * @param {Blob} game - The zip data of the game
          */
         async (game) => {
+            // "Optimize for slower devices" was a per-build choice (see app.js);
+            // a build made with it on gets a capped backing-store resolution,
+            // which is the single biggest GPU fill-rate cost on a high-DPI
+            // screen paired with a weak GPU.
+            try {
+                if (localStorage.getItem("webPerfMode:" + version) === "1") {
+                    Object.defineProperty(window, "devicePixelRatio", {
+                        configurable: true,
+                        get: function () { return 1 }
+                    })
+                }
+            } catch (e) {}
+
             const PREFIX = "Balatro_" + version + "_";
 
             const originalOpen = indexedDB.open;

@@ -593,7 +593,39 @@ end
 
 -- Patch load for smods
 -- btw, mod support is pretty nonexistent
-load = loadstring`,
+load = loadstring
+
+-- "Optimize for slower devices" (see index.html / build.js): the build
+-- writes this marker file only when that box was checked, so it is read back
+-- here rather than guessing at Balatro's own options schema. Everything
+-- below is a real LOVE API that is already safe to call this early in boot
+-- (love.window creates its context before main.lua runs), so this stays a
+-- harmless no-op on a LOVE version where any one call is missing.
+local WEB_PERF_MODE = false
+do
+    local ok, info = pcall(love.filesystem.getInfo, "web_perf_mode")
+    WEB_PERF_MODE = ok and info ~= nil
+end
+
+if WEB_PERF_MODE then
+    -- Linear/nearest filtering is cheaper per pixel than the game's default,
+    -- and there is no mipmap chain to sample from now anyway (see
+    -- override_setMipmapFilter above).
+    pcall(function()
+        love.graphics.setDefaultFilter("nearest", "nearest")
+    end)
+
+    -- Force vsync on and multisampling off: an uncapped frame rate burns
+    -- the most power and GPU time on exactly the hardware this mode targets,
+    -- and MSAA is one of the more expensive things a weak GPU can be asked
+    -- to do every frame.
+    pcall(function()
+        local w, h, flags = love.window.getMode()
+        flags.vsync = 1
+        flags.msaa = 0
+        love.window.setMode(w, h, flags)
+    end)
+end`,
 // -------------------------------------------------------------------------------
   "nativefs.lua": `-- Web stand-in for the 'nativefs' module that Steamodded and other mods use to
 -- reach outside LOVE's sandbox. A browser has no real filesystem to reach, so

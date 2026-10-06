@@ -107,6 +107,38 @@ Known gaps:
   `love.filesystem.mount` succeeding on an archive inside the fused game, which
   is not guaranteed. Extract them instead.
 
+Large content mods like [Ortalab](https://github.com/EremelMods/Ortalab) and
+[Cryptid](https://github.com/SpectralPack/Cryptid) are plain Steamodded mods
+(no shaders, no FFI) and go through the same path as any other Steamodded
+mod. Cryptid additionally depends on a mod called Amulet, which is easy to
+forget to add alongside it; the build now checks every mod's declared
+`dependencies` against what was actually added and reports anything still
+missing, the same way it already did for a missing Steamodded.
+
+Building a mod with hundreds of files (both of the above included) can take a
+while in the Lua 5.1 conversion and patch-application passes; the build now
+reports progress per file there too, and yields back to the browser
+periodically during every heavy pass so the tab does not look hung while it
+works through a large mod.
+
+### Optimized mode for slower devices
+
+The "Optimize for slower devices" checkbox does two things:
+
+- During the build, it yields back to the browser more often while patching
+  mods, trading a bit of build time for a tab that stays responsive on weak
+  hardware.
+- In the built game, it asks LÖVE to use cheaper nearest-neighbour texture
+  filtering, forces vsync on and multisampling off (an uncapped frame rate
+  and MSAA are some of the more expensive things to ask a weak GPU for every
+  frame), and caps the canvas to one device pixel per CSS pixel instead of
+  following the display's native pixel ratio, which is usually the single
+  biggest GPU cost on a high-DPI screen paired with a slow GPU.
+
+It is all built on real LÖVE and browser APIs rather than guesses about
+Balatro's own settings, so turning it on is harmless even on a build where it
+does not help.
+
 ### Lovely dump
 
 The 'Use Lovely Dump' button is still there. Lovely writes a dump of every file
