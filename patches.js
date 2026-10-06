@@ -480,6 +480,80 @@ local function fix_array_constructors(code)
     return code
 end
 
+-- GLSL ES 1.00's "for" loops are restricted (Appendix A of the spec): the
+-- init value, the loop bound and the increment step all have to be constant
+-- expressions - a numeric literal, or built from other variables that are
+-- themselves constant. Desktop GL does not enforce this, so shaders regularly
+-- spell those out as a few plain locals instead, e.g.
+--   float iterations = 10.;
+--   for (float i = 0.; i < iterations; ++i) { ... }
+-- which compiles natively and fails outright in WebGL: 'Loop index cannot be
+-- compared with non-constant expression'. That takes the whole runtime down
+-- the same way an array constructor does (see above), not just that one
+-- shader, so it is worth folding these by hand.
+local function try_eval_constant(expr)
+    -- Only ever hands plain arithmetic to load(): every identifier was
+    -- already substituted with a number by the time this runs, and the
+    -- pattern rejects anything else before it is handed off.
+    if not expr:match("^[%d%.%+%-%*/%(%)%s]+$") then return nil end
+    local chunk = (loadstring or load)("return (" .. expr .. ")")
+    if not chunk then return nil end
+    local ok, result = pcall(chunk)
+    if ok and type(result) == "number" then return result end
+    return nil
+end
+
+local function format_glsl_float(n)
+    local s = string.format("%.6f", n)
+    s = s:gsub("(%.%d-)0+$", "%1")
+    s = s:gsub("%.$", ".0")
+    return s
+end
+
+-- Every identifier used anywhere inside a for-loop's parentheses, except the
+-- loop variable's own name, is a candidate for folding.
+local function gather_loop_idents(code)
+    local wanted = {}
+    for clause in code:gmatch("for%s*%([^%)]-%)") do
+        local loop_var = clause:match("for%s*%(%s*[%a_][%w_]*%s+([%a_][%w_]*)%s*=")
+        for ident in clause:gmatch("[%a_][%w_]*") do
+            if ident ~= loop_var then wanted[ident] = true end
+        end
+    end
+    return wanted
+end
+
+local function resolve_loop_constants(code)
+    local wanted = gather_loop_idents(code)
+    if next(wanted) == nil then return code end
+
+    -- A few passes let a constant defined in terms of another constant
+    -- (d_step = two_pi / direction) resolve once its dependency is known.
+    local consts = {}
+    for pass = 1, 4 do
+        for name, expr in code:gmatch("[%a_][%w_]*%s+([%a_][%w_]*)%s*=%s*([^;%(%)]-)%s*;") do
+            if not consts[name] then
+                local substituted = expr:gsub("[%a_][%w_]*", function(id)
+                    return consts[id] and format_glsl_float(consts[id]) or id
+                end)
+                local value = try_eval_constant(substituted)
+                if value then consts[name] = value end
+            end
+        end
+    end
+    if next(consts) == nil then return code end
+
+    return (code:gsub("for%s*%([^%)]-%)", function(clause)
+        local loop_var = clause:match("for%s*%(%s*[%a_][%w_]*%s+([%a_][%w_]*)%s*=")
+        return (clause:gsub("[%a_][%w_]*", function(id)
+            if id ~= loop_var and wanted[id] and consts[id] then
+                return format_glsl_float(consts[id])
+            end
+            return id
+        end))
+    end))
+end
+
 local _newShader = love.graphics.newShader
 love.graphics.newShader = function(code, other_code)
     if type(code) == "string" and code:find("\\n", 1, true) then
@@ -487,6 +561,7 @@ love.graphics.newShader = function(code, other_code)
         -- "uv.x < 0" becomes "uv.x < 0.0", and the same with the operands swapped
         code = code:gsub("([%a_][%w_]*%.[xyzwrgba])(%s*[<>]=?%s*)(%d+)([^%.%d])", "%1%2%3.0%4")
         code = code:gsub("([^%.%w_])(%d+)(%s*[<>]=?%s*)([%a_][%w_]*%.[xyzwrgba])", "%1%2.0%3%4")
+        code = resolve_loop_constants(code)
     end
     return _newShader(code, other_code)
 end
@@ -593,7 +668,39 @@ end
 
 -- Patch load for smods
 -- btw, mod support is pretty nonexistent
-load = loadstring`,
+load = loadstring
+
+-- "Optimize for slower devices" (see index.html / build.js): the build
+-- writes this marker file only when that box was checked, so it is read back
+-- here rather than guessing at Balatro's own options schema. Everything
+-- below is a real LOVE API that is already safe to call this early in boot
+-- (love.window creates its context before main.lua runs), so this stays a
+-- harmless no-op on a LOVE version where any one call is missing.
+local WEB_PERF_MODE = false
+do
+    local ok, info = pcall(love.filesystem.getInfo, "web_perf_mode")
+    WEB_PERF_MODE = ok and info ~= nil
+end
+
+if WEB_PERF_MODE then
+    -- Linear/nearest filtering is cheaper per pixel than the game's default,
+    -- and there is no mipmap chain to sample from now anyway (see
+    -- override_setMipmapFilter above).
+    pcall(function()
+        love.graphics.setDefaultFilter("nearest", "nearest")
+    end)
+
+    -- Force vsync on and multisampling off: an uncapped frame rate burns
+    -- the most power and GPU time on exactly the hardware this mode targets,
+    -- and MSAA is one of the more expensive things a weak GPU can be asked
+    -- to do every frame.
+    pcall(function()
+        local w, h, flags = love.window.getMode()
+        flags.vsync = 1
+        flags.msaa = 0
+        love.window.setMode(w, h, flags)
+    end)
+end`,
 // -------------------------------------------------------------------------------
   "nativefs.lua": `-- Web stand-in for the 'nativefs' module that Steamodded and other mods use to
 -- reach outside LOVE's sandbox. A browser has no real filesystem to reach, so
