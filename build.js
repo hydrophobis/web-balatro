@@ -34,42 +34,11 @@ const PATCH_REVISION = "2"
 const NEEDS_FFI = /require *\(? *["']ffi["']|\bffi\.(cdef|load|typeof|metatype)\b/
 
 /**
- * Hands control back to the browser for a tick. A big content mod (Ortalab
- * and Cryptid both ship hundreds of files) means hundreds of synchronous
- * tokenize/patch passes back to back; without an occasional yield the tab
- * can look hung on a slow device even though it is still working.
- *
- * @returns {Promise<void>}
- */
-function yieldToUI() {
-    return new Promise((resolve) => setTimeout(resolve, 0))
-}
-
-/**
- * @param {number} everyN Yield after this many calls
- * @returns {() => Promise<void>}
- */
-function makeYielder(everyN) {
-    let count = 0
-    return async function maybeYield() {
-        count++
-        if (count % everyN === 0) await yieldToUI()
-    }
-}
-
-/**
  * @param {Blob | File} blob .zip or .exe of balatro
  * @param {Object<string, Object>} mods Nested object of mods
- * @param {{performanceMode?: boolean}} [options]
  * @returns {Promise<Blob>} .zip of patched source
  */
-async function buildFromSource(blob, mods, options) {
-    options = options || {}
-    const performanceMode = !!options.performanceMode
-    // Yield more often in performance mode: a slower device benefits more
-    // from staying responsive than from the build finishing a bit sooner.
-    const maybeYield = makeYielder(performanceMode ? 5 : 25)
-
+async function buildFromSource(blob, mods) {
     const progress_bar = $("progressBar")
     const status_text = $("status")
 
@@ -200,7 +169,6 @@ async function buildFromSource(blob, mods, options) {
         note("these mods need Steamodded, which was not added to this build: " +
             metadata.needs_steamodded.join(", "))
     }
-    for (const message of metadata.missing_dependencies) note(message)
 
     // --- module patches -----------------------------------------------------
     // Lovely injects these into package.preload. Here they become files, which
@@ -250,7 +218,6 @@ async function buildFromSource(blob, mods, options) {
             requires_before[patch.before] = requires_before[patch.before] || []
             requires_before[patch.before].push(patch.name)
         }
-        await maybeYield()
     }
 
     // --- copy sources -------------------------------------------------------
@@ -266,7 +233,6 @@ async function buildFromSource(blob, mods, options) {
             }
         }
         copy_contents.set(entry, sources)
-        await maybeYield()
     }
 
     /**
@@ -316,7 +282,6 @@ async function buildFromSource(blob, mods, options) {
         if (result.applied) patched_files++
         applied_patches += result.applied
         report.push.apply(report, result.warnings)
-        await maybeYield()
     }
 
     // --- mod files ----------------------------------------------------------
@@ -408,15 +373,6 @@ async function buildFromSource(blob, mods, options) {
         zipfile.file("web_patched", PATCH_REVISION)
     }
 
-    // The "optimize for slower devices" choice is independent of the patch
-    // revision above - it can be flipped on an already-patched build without
-    // forcing a full re-patch - so it is written (or cleared) unconditionally.
-    if (performanceMode) {
-        zipfile.file("web_perf_mode", "true")
-    } else {
-        zipfile.remove("web_perf_mode")
-    }
-
     // Prepended last so they still land after `require "web_patches"`, which
     // has to run before any mod code touches the love API.
     for (const [target, module_names] of Object.entries(requires_before)) {
@@ -439,23 +395,15 @@ async function buildFromSource(blob, mods, options) {
         if (!file.dir && relativePath.toLowerCase().endsWith(".lua")) lua_files.push(relativePath)
     })
 
-    for (let i = 0; i < lua_files.length; i++) {
-        const path = lua_files[i]
-        progress_bar.value = String(80 + Math.round((i / Math.max(lua_files.length, 1)) * 10))
-        status_text.innerText = "Converting to Lua 5.1 (" + (i + 1) + "/" + lua_files.length + ")"
-
+    for (const path of lua_files) {
         const contents = await get_file(path)
-        if (contents === null || !Lua51.needsTransform(contents)) {
-            await maybeYield()
-            continue
-        }
+        if (contents === null || !Lua51.needsTransform(contents)) continue
         const result = Lua51.transform(contents, path)
         report.push.apply(report, result.warnings)
         if (result.changed) {
             set_file(path, result.code)
             transformed++
         }
-        await maybeYield()
     }
 
     // --- done ---------------------------------------------------------------
@@ -468,7 +416,6 @@ async function buildFromSource(blob, mods, options) {
     }
     if (transformed) summary.push(transformed + " file(s) converted for Lua 5.1")
     if (steamodded) summary.push("Steamodded support enabled")
-    if (performanceMode) summary.push("optimized for slower devices")
 
     const game = await zipfile.generateAsync({ type: "blob" })
     progress_bar.value = "100"
@@ -509,40 +456,19 @@ function collectModTomls(mod) {
 }
 
 /**
- * A mod's `dependencies` entries look like `"Amulet (>=2.7)"`; only the bare
- * id at the front is needed to check whether something provides it.
- *
- * @param {string} dependency
- * @returns {string|null}
- */
-function dependencyId(dependency) {
-    const match = /^[^\s(]+/.exec(String(dependency))
-    return match ? match[0] : null
-}
-
-/**
  * Read the metadata JSON that Steamodded mods ship, so the build can say
- * whether Steamodded itself is present, which mods are waiting on it, and
- * which mods declare a dependency on some other mod (e.g. Cryptid needs
- * Amulet) that was not added to this build either.
+ * whether Steamodded itself is present and which mods are waiting on it.
  *
  * @param {Object<string, Object>} mods
  * @param {string[]} mod_names
- * @returns {Promise<{provides_steamodded: boolean, needs_steamodded: string[], missing_dependencies: string[]}>}
+ * @returns {Promise<{provides_steamodded: boolean, needs_steamodded: string[]}>}
  */
 async function inspectMods(mods, mod_names) {
     let provides_steamodded = false
     const needs_steamodded = []
-    /** Ids a mod can be referred to by: its own id/name/`provides` entries, and its folder name. */
-    const provided_ids = new Set()
-    /** @type {Object<string, string[]>} Mod name -> ids of the (non-Steamodded) mods it declares needing. */
-    const declared_dependencies = {}
 
     for (const name of mod_names) {
         let dependent = false
-        const deps = []
-        provided_ids.add(name.toLowerCase())
-
         for (const [file_name, file] of Object.entries(mods[name])) {
             if (!(file instanceof File)) continue
             const lower = file_name.toLowerCase()
@@ -558,22 +484,10 @@ async function inspectMods(mods, mod_names) {
                 if (/steamodded/i.test(String(meta.name || "")) || String(meta.id) === "Steamodded") {
                     provides_steamodded = true
                 }
-                if (meta.id) provided_ids.add(String(meta.id).toLowerCase())
-                for (const provided of [].concat(meta.provides || [])) {
-                    provided_ids.add(String(provided).toLowerCase())
-                }
                 // A Steamodded mod is identified by its metadata JSON;
                 // `main_file` is the field Steamodded itself requires.
                 if (meta.main_file) dependent = true
-                for (const dependency of meta.dependencies || []) {
-                    if (/^(smods|steamodded)/i.test(String(dependency))) {
-                        dependent = true
-                    } else {
-                        const id = dependencyId(dependency)
-                        if (id) deps.push(id)
-                    }
-                }
-                for (const dependency of meta.conflicts || []) {
+                for (const dependency of [].concat(meta.dependencies || [], meta.conflicts || [])) {
                     if (/^(smods|steamodded)/i.test(String(dependency))) dependent = true
                 }
             } else if (lower.endsWith(".lua")) {
@@ -583,23 +497,9 @@ async function inspectMods(mods, mod_names) {
             }
         }
         if (dependent) needs_steamodded.push(name)
-        if (deps.length) declared_dependencies[name] = deps
     }
 
-    const missing_dependencies = []
-    for (const [name, deps] of Object.entries(declared_dependencies)) {
-        for (const id of deps) {
-            if (!provided_ids.has(id.toLowerCase())) {
-                missing_dependencies.push(name + " needs '" + id + "', which was not added to this build")
-            }
-        }
-    }
-
-    return {
-        provides_steamodded: provides_steamodded,
-        needs_steamodded: needs_steamodded,
-        missing_dependencies: missing_dependencies
-    }
+    return { provides_steamodded: provides_steamodded, needs_steamodded: needs_steamodded }
 }
 
 /**

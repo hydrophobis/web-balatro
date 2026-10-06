@@ -99,7 +99,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     const use_lovely_dump_button = $("useLovelyDump")
 
     const version_name_input = $("makeName")
-    const perf_mode_checkbox = $("perfMode")
 
     const build_button = $("parseBtn")
 
@@ -167,17 +166,12 @@ document.addEventListener("DOMContentLoaded", async () => {
                 }
             }
 
-            const performanceMode = perf_mode_checkbox.checked
-            game = await buildFromSource(file, mods, { performanceMode: performanceMode });
+            game = await buildFromSource(file, mods);
 
             progress_bar.value = "95"
             status_text.innerText = "Saving to Cache"
 
             await saveGameToCache(game, name);
-
-            try {
-                localStorage.setItem("webPerfMode:" + name, performanceMode ? "1" : "0")
-            } catch {}
 
             progress_bar.value = "100"
             status_text.innerText = "Done"
