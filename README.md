@@ -96,7 +96,8 @@ Six things make it work:
 
 Known gaps:
 
-- Only the two OpenGL ES problems above are repaired. A mod shader that needs
+- Only the three OpenGL ES problems above (array constructors, int/float
+  comparisons, non-constant loop bounds) are repaired. A mod shader that needs
   more than that will still fail to compile, and that crashes the runtime rather
   than just losing an effect.
 - Sounds a mod registers through Steamodded are accepted but never play, because
@@ -107,13 +108,30 @@ Known gaps:
   `love.filesystem.mount` succeeding on an archive inside the fused game, which
   is not guaranteed. Extract them instead.
 
-Large content mods like [Ortalab](https://github.com/EremelMods/Ortalab) and
-[Cryptid](https://github.com/SpectralPack/Cryptid) are plain Steamodded mods
-(no shaders, no FFI) and go through the same path as any other Steamodded
-mod. Cryptid additionally depends on a mod called Amulet, which is easy to
-forget to add alongside it; the build now checks every mod's declared
-`dependencies` against what was actually added and reports anything still
-missing, the same way it already did for a missing Steamodded.
+[Ortalab](https://github.com/EremelMods/Ortalab) and
+[Cryptid](https://github.com/SpectralPack/Cryptid) both ship custom card
+shaders (edition/foil effects, mostly), and both shipped at least one shader
+with a `for` loop whose bound or step was a plain local variable instead of a
+literal - legal on desktop GL, which is what native Balatro and Lovely's own
+repair hook target, and a hard compile error on WebGL's GLSL ES 1.00
+("Loop index cannot be compared with non-constant expression"), which is what
+these mods' atlases actually render through here. That is exactly the failure
+this project's shader repair already exists for (see "WebGL is OpenGL ES"
+below): the shader never compiles, and the runtime traps when the half-built
+object is collected, taking the whole game down before it reaches the menu -
+with nothing useful in the browser console, since it isn't a Lua error.
+`love.graphics.newShader` now also folds a loop's init/bound/step back to a
+literal when they only depend on other plain-literal locals (walking chains
+like `d_step = two_pi / direction`), which is enough to make both mods'
+shaders - and Ortalab's `fluorescent.fs` and Cryptid's `blur.fs` specifically,
+the two that actually hit this - compile cleanly. Verified by running every
+shader both mods ship through this exact code path and compiling the result
+with a real WebGL context (headless Chromium), not just by inspection.
+
+Cryptid additionally depends on a mod called Amulet, which is easy to forget
+to add alongside it; the build now checks every mod's declared `dependencies`
+against what was actually added and reports anything still missing, the same
+way it already did for a missing Steamodded.
 
 Building a mod with hundreds of files (both of the above included) can take a
 while in the Lua 5.1 conversion and patch-application passes; the build now
