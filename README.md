@@ -161,6 +161,18 @@ needs no rebuild:
 
 Versions built with the old checkbox start on Low.
 
+Balanced and Low also tune Lua's garbage collector (pause 300, step multiplier
+100) so it works in smaller steps. In a test with a large live heap and heavy
+allocation, the worst frame dropped from 38 ms to 25 ms against the default
+settings, at similar memory use.
+
+### Mod fixes
+
+Some mod bugs only show up here and are corrected in the mod's source at build
+time (`MOD_SOURCE_FIXES` in build.js). Talisman's "Vanilla (e308)" score limit
+crashes on startup otherwise, because it stores an empty string that Lua treats
+as true.
+
 It is all built on real LÖVE and browser APIs rather than guesses about
 Balatro's own settings, so turning it on is harmless even on a build where it
 does not help.

@@ -28,7 +28,32 @@ const LOVELY_DUMP = "Dump from Lovely"
  *
  * Storing the revision instead means such a build re-patches itself.
  */
-const PATCH_REVISION = "4"
+/**
+ * Corrections for bugs in a mod's own source that only matter here. Each one
+ * is skipped when the text it targets is not found, so a mod that fixed the
+ * problem itself is left alone.
+ */
+const MOD_SOURCE_FIXES = [
+    {
+        // Talisman's "Vanilla" score limit stores break_infinity = "", which is
+        // truthy in Lua, so it goes on to install big-number overrides around
+        // a library that never loaded and crashes in number_format.
+        path: /(^|\/)talisman\.lua$/,
+        find: "if Talisman.config_file.break_infinity then",
+        replace: 'if Talisman.config_file.break_infinity and Talisman.config_file.break_infinity ~= "" then',
+    },
+]
+
+function applyModSourceFixes(path, text) {
+    for (const fix of MOD_SOURCE_FIXES) {
+        if (fix.path.test(path.split("\\").join("/")) && text.includes(fix.find)) {
+            text = text.split(fix.find).join(fix.replace)
+        }
+    }
+    return text
+}
+
+const PATCH_REVISION = "5"
 
 /** LuaJIT's FFI, which love.js has no equivalent for. */
 const NEEDS_FFI = /require *\(? *["']ffi["']|\bffi\.(cdef|load|typeof|metatype)\b/
@@ -138,7 +163,7 @@ async function buildFromSource(blob, mods, options) {
         if (!current || !(current instanceof File)) {
             return Promise.reject(new Error("mod '" + mod + "' has no file '" + path + "'"))
         }
-        return current.text()
+        return current.text().then((text) => applyModSourceFixes(path, text))
     }
 
     // Replace source with patched data from an external Lovely run.

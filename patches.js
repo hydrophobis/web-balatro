@@ -685,6 +685,16 @@ do
     WEB_PERF_MODE = ok and info ~= nil
 end
 
+for index, value in pairs(arg or {}) do
+    if value == "--web-gc" and type(index) == "number" then
+        local pause, stepmul = tonumber(arg[index + 1]), tonumber(arg[index + 2])
+        if pause and stepmul then
+            collectgarbage("setpause", pause)
+            collectgarbage("setstepmul", stepmul)
+        end
+    end
+end
+
 if WEB_PERF_MODE then
     -- Linear/nearest filtering is cheaper per pixel than the game's default,
     -- and there is no mipmap chain to sample from now anyway (see

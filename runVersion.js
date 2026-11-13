@@ -39,7 +39,7 @@ function runVersion(version) {
             Module.INITIAL_MEMORY = 268435456
             Module.canvas = canvas
             Module.printErr = console.error
-            Module.arguments = ["game.love"] // 1st argument is the path of the package
+            Module.arguments = ["game.love"].concat(getPerfArguments(version)) // 1st argument is the path of the package
             Module.preRun = [
                 function () { // Load game.love into the fs
                     Module.addRunDependency("fp game.love");

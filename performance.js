@@ -1,7 +1,7 @@
 const PERF_TIERS = {
-    off: { label: "Off", maxPixelRatio: Infinity, maxFps: 0, highPerformanceGpu: false },
-    balanced: { label: "Balanced", maxPixelRatio: 1.5, maxFps: 0, highPerformanceGpu: true },
-    low: { label: "Low", maxPixelRatio: 1, maxFps: 30, highPerformanceGpu: true },
+    off: { label: "Off", maxPixelRatio: Infinity, maxFps: 0, highPerformanceGpu: false, gc: null },
+    balanced: { label: "Balanced", maxPixelRatio: 1.5, maxFps: 0, highPerformanceGpu: true, gc: { pause: 300, stepMul: 100 } },
+    low: { label: "Low", maxPixelRatio: 1, maxFps: 30, highPerformanceGpu: true, gc: { pause: 300, stepMul: 100 } },
 }
 
 function getPerfTier(version) {
@@ -49,6 +49,11 @@ function capPixelRatio(max) {
     const real = window.devicePixelRatio || 1
     if (real <= max) return
     Object.defineProperty(window, "devicePixelRatio", { configurable: true, get: () => max })
+}
+
+function getPerfArguments(version) {
+    const gc = PERF_TIERS[getPerfTier(version)].gc
+    return gc ? ["--web-gc", String(gc.pause), String(gc.stepMul)] : []
 }
 
 function applyPerformance(version) {
