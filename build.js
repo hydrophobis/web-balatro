@@ -28,7 +28,7 @@ const LOVELY_DUMP = "Dump from Lovely"
  *
  * Storing the revision instead means such a build re-patches itself.
  */
-const PATCH_REVISION = "3"
+const PATCH_REVISION = "4"
 
 /** LuaJIT's FFI, which love.js has no equivalent for. */
 const NEEDS_FFI = /require *\(? *["']ffi["']|\bffi\.(cdef|load|typeof|metatype)\b/

@@ -787,7 +787,7 @@ nativefs.resolve = resolve
 
 local function ensureParent(path)
     local dir = path:match("^(.*)/[^/]*$")
-    if dir and dir ~= "" and not love.filesystem.getInfo(dir) then
+    if dir and dir ~= "" then
         love.filesystem.createDirectory(dir)
     end
 end

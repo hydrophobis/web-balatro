@@ -35,6 +35,7 @@ async function loadVersion(versionId) {
     const save_download = $("save-download")
     const save_upload = $("save-upload")
     const save_delete = $("save-delete")
+    const save_reset_configs = $("save-reset-configs")
 
     if (!versionId) {
         loaded_version_name.innerText = "Nothing loaded"
@@ -46,6 +47,7 @@ async function loadVersion(versionId) {
         save_download.disabled = true;
         save_upload.disabled = true;
         save_delete.disabled = true;
+        save_reset_configs.disabled = true;
     }
 
     /** @type {string[]} */
@@ -327,6 +329,36 @@ async function loadVersion(versionId) {
 
         status_text.innerText = "Ready"
         progress_bar.value = 0;
+    }
+
+    save_reset_configs.disabled = false;
+
+    save_reset_configs.onclick = async function() {
+        const request = indexedDB.open("Balatro_" + loaded_game_id + "_/home/web_user/love")
+        const db = await new Promise((resolve, reject) => {
+            request.onsuccess = () => resolve(request.result)
+            request.onerror = () => reject(request.error)
+        })
+
+        const removed = await new Promise((resolve, reject) => {
+            const tx = db.transaction("FILE_DATA", "readwrite")
+            const store = tx.objectStore("FILE_DATA")
+            const keys = store.getAllKeys()
+            let count = 0
+            keys.onsuccess = () => {
+                for (const key of keys.result) {
+                    if (/\/Mods\/[^/]+\/config\.lua$/.test(key)) {
+                        store.delete(key)
+                        count++
+                    }
+                }
+            }
+            tx.oncomplete = () => resolve(count)
+            tx.onerror = () => reject(tx.error)
+        })
+        db.close()
+
+        status_text.innerText = removed ? "Reset " + removed + " mod config file(s)" : "No mod configs to reset"
     }
 
     save_delete.disabled = false;
