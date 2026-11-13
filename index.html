@@ -12,6 +12,7 @@
     <script src="lovely.js"></script>
     <script src="lua51.js"></script>
     <script src="renderVersionList.js"></script>
+    <script src="performance.js"></script>
     <script src="runVersion.js"></script>
     <script src="loadVersion.js"></script>
     <script src="modlibrary.js"></script>
@@ -66,6 +67,12 @@
           <button id="runBtn" disabled>Start Game</button>
           <button id="downloadCachedBtn" disabled>Download Version</button>
           <button id="makePortableBtn" disabled>Make Portable</button>
+          <label for="perfTier">Performance:</label>
+          <select id="perfTier" disabled title="Applied when the game starts. Balanced caps render resolution at 1.5x and asks for the high-performance GPU. Low renders at 1x and caps the frame rate at 30.">
+            <option value="off">Off</option>
+            <option value="balanced">Balanced</option>
+            <option value="low">Low</option>
+          </select>
         </div>
       </section>
 

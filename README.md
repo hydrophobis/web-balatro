@@ -147,11 +147,19 @@ The "Optimize for slower devices" checkbox does two things:
   mods, trading a bit of build time for a tab that stays responsive on weak
   hardware.
 - In the built game, it asks LÖVE to use cheaper nearest-neighbour texture
-  filtering, forces vsync on and multisampling off (an uncapped frame rate
-  and MSAA are some of the more expensive things to ask a weak GPU for every
-  frame), and caps the canvas to one device pixel per CSS pixel instead of
-  following the display's native pixel ratio, which is usually the single
-  biggest GPU cost on a high-DPI screen paired with a slow GPU.
+  filtering and forces vsync on and multisampling off.
+
+The render cost is set separately with the **Performance** selector in the
+Player section. It is remembered per version, applies when the game starts and
+needs no rebuild:
+
+| Level | Render resolution | Frame rate | GPU |
+| --- | --- | --- | --- |
+| Off | native | uncapped | default |
+| Balanced | at most 1.5 device pixels per CSS pixel | uncapped | high-performance requested |
+| Low | 1 device pixel per CSS pixel | capped at 30 | high-performance requested |
+
+Versions built with the old checkbox start on Low.
 
 It is all built on real LÖVE and browser APIs rather than guesses about
 Balatro's own settings, so turning it on is harmless even on a build where it

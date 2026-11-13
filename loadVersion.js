@@ -59,6 +59,13 @@ async function loadVersion(versionId) {
 
     run_button.disabled = false;
 
+    const perf_tier = $("perfTier")
+    perf_tier.disabled = false
+    perf_tier.value = getPerfTier(loaded_game_id)
+    perf_tier.onchange = function() {
+        setPerfTier(loaded_game_id, perf_tier.value)
+    }
+
     run_button.onclick = function() {
         runVersion(loaded_game_id)
     }
