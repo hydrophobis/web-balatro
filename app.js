@@ -40,6 +40,61 @@ function getDataURIFromBlob(blob) {
 
 let cached_games = []
 
+function reportError(err) {
+    if (err && err.name === "AbortError") return
+    showError(err instanceof Error ? err.message : String(err))
+    console.error(err)
+}
+
+/**
+ * @param {{name: string, source: Blob, modNames: string[], performanceMode: boolean}} job
+ */
+async function runBuild({ name, source, modNames, performanceMode }) {
+    const progress_bar = $("progressBar")
+    const status_text = $("status")
+
+    const game = await buildFromSource(source, buildModTrees(modNames), { performanceMode })
+
+    progress_bar.value = "95"
+    status_text.innerText = "Saving to Cache"
+
+    await saveGameToCache(game, name)
+
+    try {
+        localStorage.setItem("webPerfMode:" + name, performanceMode ? "1" : "0")
+    } catch {}
+    writeProfile(name, { mods: modNames, performanceMode })
+
+    progress_bar.value = "100"
+    status_text.innerText = "Done"
+    setTimeout(() => {
+        progress_bar.value = "0"
+    }, 1000)
+}
+
+/**
+ * Rebuild a version from its recorded mod list using the current library
+ * contents. The version keeps its name, so its save data carries over.
+ *
+ * @param {string} name
+ */
+async function rebuildVersion(name) {
+    const profile = readProfile(name)
+    if (!profile) return
+    const source = await loadCachedGame("vanilla")
+    if (!source) {
+        showError("Rebuilding needs the 'vanilla' version to be cached.")
+        return
+    }
+    const missing = profile.mods.filter((mod) => !library[mod])
+    const present = profile.mods.filter((mod) => library[mod])
+    if (missing.length && !confirm("These mods are no longer in your library and will be left out: " + missing.join(", ") + ". Rebuild anyway?")) return
+
+    await runBuild({ name, source, modNames: present, performanceMode: !!profile.performanceMode })
+    writeProfile(name, { mods: present, performanceMode: !!profile.performanceMode })
+    await renderVersionList()
+}
+
 /** Messages past this point are only written to the console. */
 const MAX_REPORT_LINES = 200
 
@@ -108,9 +163,10 @@ document.addEventListener("DOMContentLoaded", async () => {
 
 
 
-    add_mods_button.onclick = addModDir
-    clear_mods_button.onclick = clearMods
-    use_lovely_dump_button.onclick = useLovelyDump
+    add_mods_button.onclick = () => addModDir().catch(reportError)
+    $("addModZip").onclick = () => pickZips(true, addModZips)
+    clear_mods_button.onclick = clearSelection
+    use_lovely_dump_button.onclick = () => useLovelyDump().catch(reportError)
 
     function checkBuildButton() {
         if (file_input.files.length > 0 && load_exe_radio.checked) {
@@ -149,7 +205,7 @@ document.addEventListener("DOMContentLoaded", async () => {
                 return
             }
 
-            if (Object.keys(mods).length > 0) {
+            if (selectedModNames().length > 0 || lovelyDump) {
                 if (name == "vanilla") {
                     if (!confirm("DANGEROUS! Overwrite the 'vannila' build? This can break subsequent builds using the cached vanilla, but this will also let you create default mods for new versions.")) {
                         return
@@ -167,29 +223,17 @@ document.addEventListener("DOMContentLoaded", async () => {
                 }
             }
 
-            const performanceMode = perf_mode_checkbox.checked
-            game = await buildFromSource(file, mods, { performanceMode: performanceMode });
-
-            progress_bar.value = "95"
-            status_text.innerText = "Saving to Cache"
-
-            await saveGameToCache(game, name);
-
-            try {
-                localStorage.setItem("webPerfMode:" + name, performanceMode ? "1" : "0")
-            } catch {}
-
-            progress_bar.value = "100"
-            status_text.innerText = "Done"
+            await runBuild({
+                name,
+                source: file,
+                modNames: selectedModNames(),
+                performanceMode: perf_mode_checkbox.checked,
+            })
 
             build_button.classList.remove("hidden")
+            await renderVersionList()
+            syncSourceChoice()
 
-            setTimeout(() => {
-                progress_bar.value = "0"
-            }, 1000)
-
-            renderVersionList()
-            
         } catch (err) {
             progress_bar.classList.add("hidden")
             showError(err instanceof Error ? err.message : String(err))
@@ -219,8 +263,17 @@ document.addEventListener("DOMContentLoaded", async () => {
     //     document.body.appendChild(s);
     // })
     
+    function syncSourceChoice() {
+        if (!load_vanilla_radio.disabled && file_input.files.length === 0) {
+            load_vanilla_radio.checked = true
+        }
+        checkBuildButton()
+    }
+
     try {
+        await refreshLibrary()
         await renderVersionList()
+        syncSourceChoice()
         status_text.innerText = "Ready"
     } catch (err) {
         showError(err.message)

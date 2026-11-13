@@ -14,6 +14,7 @@
     <script src="renderVersionList.js"></script>
     <script src="runVersion.js"></script>
     <script src="loadVersion.js"></script>
+    <script src="modlibrary.js"></script>
     <script src="mods.js"></script>
     <script src="patches.js"></script>
     <script src="cache.js"></script>
@@ -34,9 +35,11 @@
         <h3>Mods</h3>
         <div class="addMods">
           <button id="addModDir">Add Mod Folder</button>
-          <button id="clearMods">Clear Mods</button>
+          <button id="addModZip">Add Mod Zip</button>
+          <button id="clearMods">Deselect All</button>
           <button id="useLovelyDump">Use Lovely Dump</button>
-          <h4>Mods Found:</h4>
+          <h4>Mod Library:</h4>
+          <small>Stored in this browser. Tick the mods to include in a build. Adding a mod with the same name replaces it.</small>
           <div class="leftAlign" id="mod-list"></div>
         </div>
         <div class="makeName">
@@ -79,6 +82,7 @@
           <thead>
             <tr>
               <th>Name</th>
+              <th>Mods</th>
               <th>Actions</th>
             </tr>
           </thead>

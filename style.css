@@ -248,3 +248,19 @@ canvas#canvas {
 #mod-list small {
   color: var(--muted);
 }
+
+.mod-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.15rem 0;
+}
+
+.mod-row small {
+  flex: 1;
+  color: var(--muted);
+}
+
+.mod-row button {
+  padding: 0.2rem 0.6rem;
+}
