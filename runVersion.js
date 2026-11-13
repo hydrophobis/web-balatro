@@ -43,8 +43,6 @@ function runVersion(version) {
             Module.preRun = [
                 function () { // Load game.love into the fs
                     Module.addRunDependency("fp game.love");
-                    var ptr = Module.getMemory(data.length);
-                    Module['HEAPU8'].set(data, ptr); // Put data after the chunk of memory
                     Module.FS_createDataFile('/', "game.love", data, true, true, true); // Add the file
                     Module.removeRunDependency("fp game.love");
                 }

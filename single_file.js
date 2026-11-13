@@ -1,5 +1,5 @@
 window.templates = {
-    "index.html": `<!DOCTYPE html><html><head><script>const PREFIX = "Balatro_%%VERSION_NAME%%_";const originalOpen = indexedDB.open;const originalDeleteDatabase = indexedDB.deleteDatabase;indexedDB.open = function(name, version) {const prefixedName = PREFIX + name;return version !== undefined?originalOpen.call(this, prefixedName, version):originalOpen.call(this, prefixedName);};indexedDB.deleteDatabase = function(name) {const prefixedName = PREFIX + name;return originalDeleteDatabase.call(this, prefixedName);};</script><script src="love.min.js"></script><title>Love.js</title><style>#canvas {position:absolute;top: 0;left: 0;width: 100vw;height: 100vh;}body {width: 100vw;height: 100vh;margin: 0px;}</style></head><body><canvas id="canvas"></canvas><script src="module.js"></script><script>(async()=>{const d=await getSource();Module={INITIAL_MEMORY:2**28,canvas:canvas,printErr:console.error,arguments:["game.love"]};Module.preRun = [function(){Module.addRunDependency("fp game.love");var ptr = Module.getMemory(d.length);Module['HEAPU8'].set(d, ptr);Module.FS_createDataFile('/', "game.love", d, true, true, true);Module.removeRunDependency("fp game.love")}];Love(Module)})()</script></body></html>`,
+    "index.html": `<!DOCTYPE html><html><head><script>const PREFIX = "Balatro_%%VERSION_NAME%%_";const originalOpen = indexedDB.open;const originalDeleteDatabase = indexedDB.deleteDatabase;indexedDB.open = function(name, version) {const prefixedName = PREFIX + name;return version !== undefined?originalOpen.call(this, prefixedName, version):originalOpen.call(this, prefixedName);};indexedDB.deleteDatabase = function(name) {const prefixedName = PREFIX + name;return originalDeleteDatabase.call(this, prefixedName);};</script><script src="love.min.js"></script><title>Love.js</title><style>#canvas {position:absolute;top: 0;left: 0;width: 100vw;height: 100vh;}body {width: 100vw;height: 100vh;margin: 0px;}</style></head><body><canvas id="canvas"></canvas><script src="module.js"></script><script>(async()=>{const d=await getSource();Module={INITIAL_MEMORY:2**28,canvas:canvas,printErr:console.error,arguments:["game.love"]};Module.preRun = [function(){Module.addRunDependency("fp game.love");Module.FS_createDataFile('/', "game.love", d, true, true, true);Module.removeRunDependency("fp game.love")}];Love(Module)})()</script></body></html>`,
     "love.min.js": `var Love = function () {
     var _scriptDir = "undefined" != typeof document && document.currentScript ? document.currentScript.src : void 0;
     return "undefined" != typeof __filename && (_scriptDir = _scriptDir || __filename),
@@ -11494,12 +11494,26 @@ window.templates = {
             // memory and threw away whatever the game had saved since - which
             // deletes a brand new save file outright, because reconcile removes
             // local files the remote does not have.
-            function persistSaves() {
-                if (!synced || syncing) return;
+            let dirty = false;
+            const SAVE_ROOT = "/home/web_user/love";
+            function markDirty(path) {
+                if (typeof path === "string" && path.indexOf(SAVE_ROOT) === 0) dirty = true;
+            }
+            FS.trackingDelegate.onWriteToFile = markDirty;
+            FS.trackingDelegate.onMakeDirectory = markDirty;
+            FS.trackingDelegate.onDeletePath = markDirty;
+            FS.trackingDelegate.onMovePath = function (from, to) {
+                markDirty(from);
+                markDirty(to);
+            };
+            function persistSaves(force) {
+                if (!synced || syncing || (force !== true && !dirty)) return;
                 syncing = true;
+                dirty = false;
                 FS.syncfs(false, (e) => {
                     syncing = false;
                     if (e) {
+                        dirty = true;
                         Module.printErr(e)
                     }
                 })
@@ -11510,11 +11524,11 @@ window.templates = {
             // and pagehide fire while the page is still alive.
             if (typeof document !== "undefined") {
                 document.addEventListener("visibilitychange", function () {
-                    if (document.visibilityState === "hidden") persistSaves()
+                    if (document.visibilityState === "hidden") persistSaves(true)
                 })
             }
             if (typeof window !== "undefined") {
-                window.addEventListener("pagehide", persistSaves)
+                window.addEventListener("pagehide", function () { persistSaves(true) })
             }
             return Module.noInitialRun && (shouldRunNow = !1),
                 noExitRuntime = !0,
