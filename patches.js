@@ -619,7 +619,10 @@ function FakeChannel:push(value)
     if WEB_DEBUG_CHANNELS then print("Pushing value to channel: ", value.type .. " - " .. self.name) end
     table.insert(self.queue, value)
     if self._thread and coroutine.status(self._thread) == "suspended" then
+        local t0 = love.timer.getTime()
         coroutine.resume(self._thread) -- Resume the previous thread when a value is pushed
+        local ms = (love.timer.getTime() - t0) * 1000
+        if ms >= 25 then print(string.format("[web-slow] %s %s took %.0f ms on the main thread", self.name, tostring(type(value) == "table" and value.type), ms)) end
     end
 end
 

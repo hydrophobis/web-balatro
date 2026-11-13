@@ -52,8 +52,20 @@ function capPixelRatio(max) {
 }
 
 function applyPerformance(version) {
+    logHitches()
     const tier = PERF_TIERS[getPerfTier(version)]
     if (tier.maxPixelRatio !== Infinity) capPixelRatio(tier.maxPixelRatio)
     if (tier.maxFps) limitFrameRate(tier.maxFps)
     if (tier.highPerformanceGpu) preferHighPerformanceGpu()
+}
+
+function logHitches(thresholdMs = 100) {
+    if (!window.PerformanceObserver || !PerformanceObserver.supportedEntryTypes.includes("long-animation-frame")) return
+    new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) {
+            if (entry.duration >= thresholdMs) {
+                console.warn("[web-hitch] frame took " + Math.round(entry.duration) + " ms (blocked " + Math.round(entry.blockingDuration) + " ms)")
+            }
+        }
+    }).observe({ type: "long-animation-frame", buffered: false })
 }
